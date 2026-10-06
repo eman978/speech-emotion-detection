@@ -1,5 +1,7 @@
+import hashlib
 import io
 import json
+from datetime import datetime
 from pathlib import Path
 
 import joblib
@@ -13,43 +15,51 @@ import streamlit as st
 from features import extract_features
 
 BASE = Path(__file__).parent
-EMOJI = {"angry": "😠", "happy": "😄", "neutral": "😐", "sad": "😢"}
-COLOR = {"angry": "#ef4444", "happy": "#f59e0b", "neutral": "#64748b", "sad": "#3b82f6"}
+COLOR = {"angry": "#dc2626", "happy": "#d97706", "neutral": "#475569", "sad": "#2563eb"}
 GRAY = "#8b8b99"
 
-st.set_page_config(page_title="Speech Emotion Detection", page_icon="🎙️", layout="wide")
+st.set_page_config(page_title="Speech Emotion Detection", layout="wide")
 
 st.markdown(
     """
 <style>
-.block-container {padding-top: 2rem; max-width: 1100px;}
-.hero {padding: 1.8rem 2rem; border-radius: 20px; margin-bottom: 1.4rem; color: #fff;
-       background: linear-gradient(135deg, #4f46e5 0%, #9333ea 55%, #ec4899 100%);
-       box-shadow: 0 10px 30px rgba(79, 70, 229, .25);}
-.hero h1 {margin: 0; padding: 0; font-size: 2.1rem; color: #fff;}
-.hero p {margin: .4rem 0 0; font-size: 1.05rem; opacity: .92;}
-.chips span {display: inline-block; margin: .7rem .4rem 0 0; padding: .25rem .75rem; border-radius: 999px;
-             background: rgba(255,255,255,.18); font-size: .85rem;}
-.card {border: 1px solid rgba(128,128,128,.25); border-radius: 18px; padding: 1.2rem 1.4rem;
-       background: rgba(128,128,128,.06);}
-.result {border-radius: 20px; padding: 1.4rem 1.6rem; color: #fff; text-align: center;}
-.result .emoji {font-size: 3.4rem; line-height: 1.1;}
-.result .label {font-size: 2rem; font-weight: 800; margin-top: .2rem;}
-.result .conf {font-size: 1rem; opacity: .92;}
-.bar-row {display: flex; align-items: center; margin: .55rem 0; gap: .7rem;}
-.bar-name {width: 105px; font-weight: 600;}
-.bar-track {flex: 1; height: 16px; border-radius: 999px; background: rgba(128,128,128,.2); overflow: hidden;}
+.block-container {padding-top: 1.6rem; max-width: 1080px;}
+.header {padding: 1.6rem 2rem; border-radius: 16px; margin-bottom: 1.2rem; color: #fff;
+         background: linear-gradient(120deg, #0f172a 0%, #1e1b4b 60%, #312e81 100%);
+         border-bottom: 4px solid #6366f1;}
+.header h1 {margin: 0; padding: 0; font-size: 1.9rem; color: #fff; letter-spacing: .2px;}
+.header p {margin: .35rem 0 0; opacity: .85; font-size: 1rem;}
+.pill {display: inline-block; margin: .8rem .35rem 0 0; padding: .2rem .8rem; border-radius: 999px;
+       font-size: .8rem; font-weight: 600; color: #fff;}
+.card {border: 1px solid rgba(128,128,128,.28); border-radius: 14px; padding: 1.1rem 1.3rem;
+       background: rgba(128,128,128,.05); margin-bottom: .8rem;}
+.card h4 {margin: 0 0 .5rem; font-size: 1rem;}
+.step {font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #6366f1; margin-bottom: .2rem;}
+.result {border-radius: 16px; padding: 1.5rem 1.4rem; color: #fff;}
+.result .k {font-size: .78rem; letter-spacing: .1em; text-transform: uppercase; opacity: .85;}
+.result .label {font-size: 2.4rem; font-weight: 800; line-height: 1.15; margin: .2rem 0 .8rem;}
+.result .meter {height: 8px; border-radius: 999px; background: rgba(255,255,255,.3); overflow: hidden;}
+.result .meter div {height: 100%; background: #fff; border-radius: 999px;}
+.result .conf {margin-top: .5rem; font-size: .95rem; opacity: .95;}
+.bar-row {display: flex; align-items: center; margin: .6rem 0; gap: .8rem;}
+.bar-name {width: 90px; font-weight: 600;}
+.bar-track {flex: 1; height: 14px; border-radius: 999px; background: rgba(128,128,128,.2); overflow: hidden;}
 .bar-fill {height: 100%; border-radius: 999px;}
-.bar-val {width: 52px; text-align: right; font-variant-numeric: tabular-nums;}
-.stat {text-align: center; padding: 1.1rem .6rem; border-radius: 18px; color: #fff;}
-.stat .v {font-size: 2rem; font-weight: 800;}
-.stat .k {font-size: .9rem; opacity: .9;}
-.tip {border-left: 4px solid #9333ea; padding: .6rem 1rem; border-radius: 8px; background: rgba(147,51,234,.08);
-      margin-bottom: 1rem; font-size: .95rem;}
+.bar-val {width: 48px; text-align: right; font-variant-numeric: tabular-nums;}
+.stat {padding: 1.1rem 1rem; border-radius: 14px; color: #fff;}
+.stat .v {font-size: 1.9rem; font-weight: 800; line-height: 1.1;}
+.stat .k {font-size: .85rem; opacity: .9; margin-top: .2rem;}
+.tip {border-left: 4px solid #6366f1; padding: .65rem 1rem; border-radius: 8px;
+      background: rgba(99,102,241,.08); margin-bottom: 1rem; font-size: .93rem;}
+.stTabs [data-baseweb="tab"] {font-weight: 600; font-size: 1rem; padding-left: 1.1rem; padding-right: 1.1rem;}
 </style>
 """,
     unsafe_allow_html=True,
 )
+
+for key, default in [("history", []), ("seen", set()), ("rec_n", 0), ("up_n", 0)]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
 @st.cache_resource
@@ -74,9 +84,9 @@ def bars_html(values, classes, maximum=1.0, as_percent=True, highlight=None):
         v = float(values[c])
         width = 100 * v / maximum if maximum else 0
         label = f"{v:.0%}" if as_percent else f"{int(v)}"
-        opacity = 1 if (highlight is None or c == highlight) else 0.45
+        opacity = 1 if (highlight is None or c == highlight) else 0.4
         rows.append(
-            f'<div class="bar-row"><div class="bar-name">{EMOJI[c]} {c.capitalize()}</div>'
+            f'<div class="bar-row"><div class="bar-name">{c.capitalize()}</div>'
             f'<div class="bar-track"><div class="bar-fill" style="width:{width:.1f}%;background:{COLOR[c]};opacity:{opacity}"></div></div>'
             f'<div class="bar-val">{label}</div></div>'
         )
@@ -96,7 +106,7 @@ def style_axes(ax):
 
 def plot_waveform(file_bytes, sr, color):
     y, sr = librosa.load(io.BytesIO(file_bytes), sr=sr)
-    fig, ax = plt.subplots(figsize=(9, 2.6))
+    fig, ax = plt.subplots(figsize=(9, 2.5))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     librosa.display.waveshow(y, sr=sr, ax=ax, color=color)
@@ -110,13 +120,14 @@ def plot_waveform(file_bytes, sr, color):
 def plot_confusion(cm, classes):
     cm = np.array(cm)
     norm = cm / cm.sum(axis=1, keepdims=True)
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
     fig.patch.set_alpha(0)
+    names = [c.capitalize() for c in classes]
     for ax, data, title, fmt in [(axes[0], cm, "Counts", "d"), (axes[1], norm, "Row-normalised", ".2f")]:
         ax.patch.set_alpha(0)
-        ax.imshow(data, cmap="Purples")
-        ax.set_xticks(range(len(classes)), classes)
-        ax.set_yticks(range(len(classes)), classes)
+        ax.imshow(data, cmap="Blues")
+        ax.set_xticks(range(len(classes)), names)
+        ax.set_yticks(range(len(classes)), names)
         ax.set_xlabel("Predicted")
         ax.set_ylabel("True")
         ax.set_title(title)
@@ -124,26 +135,40 @@ def plot_confusion(cm, classes):
         for i in range(len(classes)):
             for j in range(len(classes)):
                 ax.text(j, i, format(data[i, j], fmt), ha="center", va="center",
-                        color="white" if data[i, j] > data.max() / 2 else "#222", fontweight="bold")
+                        color="white" if data[i, j] > data.max() / 2 else "#111", fontweight="bold")
     fig.tight_layout()
     return fig
 
 
-def show_analysis(file_bytes, model, metrics):
+def add_to_history(file_bytes, source, proba):
+    digest = hashlib.md5(file_bytes).hexdigest()
+    if digest in st.session_state.seen:
+        return
+    st.session_state.seen.add(digest)
+    row = {"Time": datetime.now().strftime("%H:%M:%S"), "Source": source,
+           "Emotion": proba.idxmax().capitalize(), "Confidence": f"{proba.max():.0%}"}
+    for c in proba.index:
+        row[c.capitalize()] = f"{proba[c]:.0%}"
+    st.session_state.history.insert(0, row)
+
+
+def show_analysis(file_bytes, source, model, metrics):
     try:
-        with st.spinner("Analysing your voice..."):
+        with st.spinner("Analysing audio..."):
             proba = predict_proba(file_bytes, model, metrics["feature_indices"])
             top = proba.idxmax()
             fig, duration = plot_waveform(file_bytes, metrics["sample_rate"], COLOR[top])
     except Exception as e:
         st.error(f"Could not process this audio. Please try another recording. ({e})")
         return
+    add_to_history(file_bytes, source, proba)
 
-    left, right = st.columns([1, 1.6], gap="large")
+    left, right = st.columns([1, 1.5], gap="large")
     with left:
         st.markdown(
-            f'<div class="result" style="background:linear-gradient(135deg,{COLOR[top]},{COLOR[top]}cc)">'
-            f'<div class="emoji">{EMOJI[top]}</div><div class="label">{top.capitalize()}</div>'
+            f'<div class="result" style="background:linear-gradient(135deg,{COLOR[top]},{COLOR[top]}d9)">'
+            f'<div class="k">Detected emotion</div><div class="label">{top.capitalize()}</div>'
+            f'<div class="meter"><div style="width:{proba.max()*100:.0f}%"></div></div>'
             f'<div class="conf">Confidence {proba.max():.0%}</div></div>',
             unsafe_allow_html=True,
         )
@@ -155,66 +180,102 @@ def show_analysis(file_bytes, model, metrics):
             st.warning("This clip is very short. Try speaking for 3-5 seconds.")
     with right:
         st.markdown(
-            f'<div class="card"><b>Probability per emotion</b>'
-            f'{bars_html(proba, metrics["classes"], highlight=top)}</div>',
+            f'<div class="card"><h4>Probability per emotion</h4>{bars_html(proba, metrics["classes"], highlight=top)}</div>',
             unsafe_allow_html=True,
         )
-
-    st.markdown("##### Waveform")
+    st.markdown("**Waveform**")
     st.pyplot(fig)
-    st.caption(f"Duration after trimming silence: {duration:.1f} s")
+    st.caption(f"Duration after trimming silence: {duration:.1f} s. Saved to the History tab.")
+
+
+def new_recording():
+    st.session_state.rec_n += 1
+
+
+def new_upload():
+    st.session_state.up_n += 1
 
 
 model = load_model()
 metrics = load_metrics()
 classes = metrics["classes"]
 
+pills = "".join(f'<span class="pill" style="background:{COLOR[c]}">{c.capitalize()}</span>' for c in classes)
 st.markdown(
-    """
-<div class="hero">
-  <h1>🎙️ Speech Emotion Detection</h1>
-  <p>Speak or upload a short clip and the AI tells you the emotion in your voice.</p>
-  <div class="chips"><span>😠 Angry</span><span>😄 Happy</span><span>😐 Neutral</span><span>😢 Sad</span></div>
-</div>
-""",
+    f'<div class="header"><h1>Speech Emotion Detection</h1>'
+    f'<p>Record your voice or upload a clip, and the model predicts the emotion in the speech.</p>{pills}</div>',
     unsafe_allow_html=True,
 )
 
-tab_predict, tab_results, tab_about = st.tabs(["🎯 Predict", "📊 Results", "ℹ️ About"])
+tab_predict, tab_history, tab_dash, tab_about = st.tabs(["Predict", "History", "Dashboard", "About"])
 
 with tab_predict:
+    st.markdown('<div class="step">Step 1</div>**Choose how to give the audio**', unsafe_allow_html=True)
+    mode = st.radio("Input method", ["Record my voice", "Upload an audio file"],
+                    horizontal=True, label_visibility="collapsed", key="mode")
     st.markdown(
         '<div class="tip"><b>Tip:</b> the model was trained on acted speech. Speak clearly for 3-5 seconds in a quiet room '
         'and exaggerate the emotion, for example say <i>"Kids are talking by the door"</i> in an angry, happy or sad voice.</div>',
         unsafe_allow_html=True,
     )
-    rec_tab, up_tab = st.tabs(["🎤 Record your voice", "📁 Upload a WAV file"])
+    st.markdown('<div class="step">Step 2</div>**Provide the audio**', unsafe_allow_html=True)
 
-    with rec_tab:
-        recording = st.audio_input("Click the microphone, speak, then click stop")
+    if mode == "Record my voice":
+        recording = st.audio_input("Press the microphone, speak, then press stop", key=f"rec_{st.session_state.rec_n}")
         if recording is None:
-            st.info("Allow microphone access in your browser, then press the mic button and speak.")
+            st.info("Allow microphone access in your browser, then press the microphone button and speak.")
         else:
-            show_analysis(recording.getvalue(), model, metrics)
-
-    with up_tab:
-        uploaded = st.file_uploader("Upload a WAV file", type=["wav"])
+            st.button("Record a new clip", on_click=new_recording, key="again_rec")
+            show_analysis(recording.getvalue(), "Microphone", model, metrics)
+    else:
+        uploaded = st.file_uploader("Upload a WAV file", type=["wav"], key=f"up_{st.session_state.up_n}")
         if uploaded is None:
-            st.info("Upload a WAV file to see the predicted emotion, probabilities and waveform.")
+            st.info("Choose a WAV file to see the predicted emotion, probabilities and waveform.")
         else:
+            st.button("Upload another file", on_click=new_upload, key="again_up")
             st.audio(uploaded.getvalue(), format="audio/wav")
-            show_analysis(uploaded.getvalue(), model, metrics)
+            show_analysis(uploaded.getvalue(), f"Upload: {uploaded.name}", model, metrics)
 
-with tab_results:
+with tab_history:
+    hist = st.session_state.history
+    st.markdown("#### Prediction history")
+    if not hist:
+        st.info("No predictions yet. Record or upload audio in the Predict tab and it will appear here.")
+    else:
+        hdf = pd.DataFrame(hist)
+        counts = hdf["Emotion"].str.lower().value_counts().reindex(classes).fillna(0)
+        c1, c2 = st.columns([1, 1.4], gap="large")
+        with c1:
+            st.markdown(
+                f'<div class="stat" style="background:#4338ca"><div class="v">{len(hdf)}</div>'
+                f'<div class="k">Predictions in this session</div></div>',
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.markdown(
+                f'<div class="card"><h4>Predicted emotions</h4>'
+                f'{bars_html(counts, classes, maximum=max(counts.max(), 1), as_percent=False)}</div>',
+                unsafe_allow_html=True,
+            )
+        st.dataframe(hdf, hide_index=True)
+        b1, b2, _ = st.columns([1, 1, 3])
+        b1.download_button("Download CSV", hdf.to_csv(index=False), "prediction_history.csv", "text/csv")
+        if b2.button("Clear history"):
+            st.session_state.history = []
+            st.session_state.seen = set()
+            st.rerun()
+        st.caption("History is kept for the current browser session only.")
+
+with tab_dash:
+    st.markdown("#### Model performance on unseen actors")
     c1, c2, c3 = st.columns(3)
-    for col, value, key, grad in [
-        (c1, f"{metrics['accuracy']:.1%}", "Accuracy", "#4f46e5,#6366f1"),
-        (c2, f"{metrics['macro_f1']:.3f}", "Macro F1", "#9333ea,#a855f7"),
-        (c3, f"{metrics['n_test']}", "Test clips (unseen actors)", "#ec4899,#f472b6"),
+    for col, value, key, color in [
+        (c1, f"{metrics['accuracy']:.1%}", "Accuracy", "#4338ca"),
+        (c2, f"{metrics['macro_f1']:.3f}", "Macro F1", "#7c3aed"),
+        (c3, f"{metrics['n_test']}", "Test clips", "#0f766e"),
     ]:
         col.markdown(
-            f'<div class="stat" style="background:linear-gradient(135deg,{grad})">'
-            f'<div class="v">{value}</div><div class="k">{key}</div></div>',
+            f'<div class="stat" style="background:{color}"><div class="v">{value}</div><div class="k">{key}</div></div>',
             unsafe_allow_html=True,
         )
     st.caption(
@@ -225,21 +286,21 @@ with tab_results:
 
     left, right = st.columns(2, gap="large")
     with left:
-        counts = pd.Series(metrics["class_counts_all"])
+        cc = pd.Series(metrics["class_counts_all"])
         st.markdown(
-            f'<div class="card"><b>Class counts (672 clips)</b>'
-            f'{bars_html(counts, classes, maximum=counts.max(), as_percent=False)}</div>',
+            f'<div class="card"><h4>Class counts (672 clips)</h4>'
+            f'{bars_html(cc, classes, maximum=cc.max(), as_percent=False)}</div>',
             unsafe_allow_html=True,
         )
     with right:
         report = metrics["per_class_report"]
         table = pd.DataFrame(
-            {c: {k: report[c][k] for k in ("precision", "recall", "f1-score", "support")} for c in classes}
+            {c.capitalize(): {k: report[c][k] for k in ("precision", "recall", "f1-score", "support")} for c in classes}
         ).T
         st.markdown("**Per-class scores**")
         st.dataframe(table.round(3))
 
-    st.markdown("##### Confusion matrix")
+    st.markdown("**Confusion matrix**")
     st.pyplot(plot_confusion(metrics["confusion_matrix"], classes))
 
     with st.expander("All experiments (cross-validation vs test)"):
@@ -248,6 +309,8 @@ with tab_results:
 with tab_about:
     st.markdown(
         """
+#### About this project
+
 **Data:** RAVDESS speech audio, 4 emotions (angry, happy, sad, neutral), 672 clips from 24 actors.
 
 **Features:** MFCC, delta-MFCC, chroma, log-mel, spectral contrast and loudness/brightness statistics per clip.
@@ -255,6 +318,8 @@ with tab_about:
 **Model:** scikit-learn classifier with balanced class weights, because the neutral class is half the size of the others.
 
 **Evaluation:** actors are split, so the test voices were never seen during training. This avoids data leakage.
+
+**How to use:** open the Predict tab, record your voice or upload a file, and read the detected emotion and the probability for each class. Every prediction is saved in the History tab.
 
 **Limitations:** the clips are acted speech recorded in a studio by North American actors. Accuracy on real phone calls,
 noisy audio, other accents or other languages will be lower.
